@@ -1,125 +1,78 @@
-import os
-import pandas as pd
-from crewai import Agent, Task, Crew
-from langchain_groq import ChatGroq
-from typing import List, Optional
+from http.server import BaseHTTPRequestHandler
+from .crew import CrewAISystem
+import json
+import logging
 
-# Initialize the LLM
-llm = ChatGroq(
-    temperature=0,
-    groq_api_key=os.getenv('GROQ_API_KEY'),
-    model_name='llama3-8b-8192'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Define Agents
-problem_definer = Agent(
-    role='Problem Definer',
-    goal='Define and clarify the machine learning problem',
-    backstory='Expert in translating business needs into ML problems',
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
+crew_system = CrewAISystem()
 
-data_assessor = Agent(
-    role='Data Assessor',
-    goal='Assess the quality and suitability of the data for the ML problem',
-    backstory='Specialist in data analysis and preprocessing',
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        content_length = int(self.headers['Content-Length'])
+        post_data = self.rfile.read(content_length)
+        data = json.loads(post_data.decode('utf-8'))
 
-model_recommender = Agent(
-    role='Model Recommender',
-    goal='Recommend suitable ML models and approaches',
-    backstory='Expert in various ML algorithms and their applications',
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
+        task_name = data.get('task')
+        task_params = data.get('params', {})
 
-code_generator = Agent(
-    role='Code Generator',
-    goal='Generate sample code for the recommended ML approach',
-    backstory='Experienced ML engineer proficient in Python and ML libraries',
-    verbose=True,
-    allow_delegation=True,
-    llm=llm
-)
+        if not task_name:
+            self.send_error(400, "Missing 'task' in request body")
+            return
 
-# Define Tasks
-def define_problem_task(user_input: str) -> Task:
-    return Task(
-        description=f"Define the ML problem based on user input: {user_input}",
-        agent=problem_definer
-    )
+        try:
+            logger.info(f"Executing task: {task_name}")
+            result = crew_system.execute_task(task_name, task_params)
+            logger.info(f"Task result: {result}")
 
-def assess_data_task(file_path: str) -> Task:
-    return Task(
-        description=f"Assess the data in the file: {file_path}",
-        agent=data_assessor
-    )
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode('utf-8'))
+        except Exception as e:
+            logger.error(f"An error occurred: {str(e)}")
+            self.send_error(500, f"Internal Server Error: {str(e)}")
 
-def recommend_model_task() -> Task:
-    return Task(
-        description="Recommend suitable ML models based on the problem and data assessment",
-        agent=model_recommender
-    )
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "healthy"}).encode('utf-8'))
+        else:
+            self.send_error(404, "Not Found")
 
-def generate_code_task() -> Task:
-    return Task(
-        description="Generate sample Python code for the recommended ML approach",
-        agent=code_generator
-    )
+if __name__ == '__main__':
+    from http.server import HTTPServer
+    port = 8000
+    httpd = HTTPServer(('', port), handler)
+    print(f"Serving on port {port}")
 
-def load_csv_file(file_path: str) -> Optional[pd.DataFrame]:
-    try:
-        df = pd.read_csv(file_path)
-        print(f"Successfully loaded CSV file with {len(df)} rows and {len(df.columns)} columns.")
-        return df
-    except Exception as e:
-        print(f"Error loading CSV file: {e}")
-        print("Proceeding without data assessment.")
-        return None
+    # Example usage
+    tasks = [
+        ("skip_trace", {
+            "name": "John Doe",
+            "last_known_address": "123 Main St, Anytown, USA",
+            "ai_provider": "openai"
+        }),
+        ("document_processing", {
+            "document_url": "https://example.com/document.pdf",
+            "document_type": "claim_form",
+            "ai_provider": "groq"
+        }),
+        ("compliance_check", {
+            "claim_id": "CLM-12345",
+            "jurisdiction": "Oklahoma",
+            "ai_provider": "openrouter"
+        })
+    ]
 
-def create_tasks(user_input: str, file_path: Optional[str]) -> List[Task]:
-    tasks = [define_problem_task(user_input)]
-    
-    if file_path:
-        df = load_csv_file(file_path)
-        if df is not None:
-            tasks.append(assess_data_task(file_path))
-    
-    tasks.extend([recommend_model_task(), generate_code_task()])
-    return tasks
+    for task_name, task_params in tasks:
+        result = crew_system.execute_task(task_name, task_params)
+        print(f"Task: {task_name}")
+        print(f"Result: {result}")
+        print("---")
 
-def save_results(user_input: str, result: str) -> None:
-    with open('ml_assistant_output.md', 'w') as f:
-        f.write("# CrewAI Machine Learning Assistant Output\n\n")
-        f.write(f"## User Input\n{user_input}\n\n")
-        f.write(f"## Analysis Results\n{result}\n")
-    
-    print("\nResults have been saved to ml_assistant_output.md")
-
-def main():
-    print("Welcome to the CrewAI Machine Learning Assistant!")
-    user_input = input("Please describe your machine learning problem: ")
-    
-    file_path = input("Enter the path to your CSV file (or press Enter to skip): ").strip()
-    
-    tasks = create_tasks(user_input, file_path)
-    
-    crew = Crew(
-        agents=[problem_definer, data_assessor, model_recommender, code_generator],
-        tasks=tasks,
-        verbose=True
-    )
-    
-    result = crew.kickoff()
-    
-    save_results(user_input, result)
-
-if __name__ == "__main__":
-    main()
+    httpd.serve_forever()
 
